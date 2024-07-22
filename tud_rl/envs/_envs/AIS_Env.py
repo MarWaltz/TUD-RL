@@ -1,6 +1,7 @@
 import math
 import pickle
 import random
+import uuid
 from copy import deepcopy
 
 import gym
@@ -29,7 +30,9 @@ class AIS_Env(gym.Env):
                  pdf_traj : bool = False,
                  cpa : bool = False,
                  continuous : bool = True,
-                 include_tcpa : bool = False):
+                 include_tcpa : bool = False,
+                 noise : float = 0.0,
+                 scenario : int = None):
         super().__init__()
 
         # Simulation settings
@@ -47,6 +50,8 @@ class AIS_Env(gym.Env):
         self.cpa = cpa
         self.supervised_path = supervised_path
         self.include_tcpa = include_tcpa
+        self.noise = noise
+        self.scenario = scenario
 
         if supervised_path is not None:
             self.forecast_window = 200  # forecast window
@@ -105,16 +110,22 @@ class AIS_Env(gym.Env):
         self._max_episode_steps = 15
         self.r = 0
 
+        self.collision_happened = 0
+
     def reset(self):
         """Resets environment to initial state."""
 
         self.step_cnt = 0           # simulation step counter
         self.sim_t    = 0           # overall passed simulation time (in s)
+        self.collision_happened = 0
 
         while True:
             try:
                 # sample situation: 0 - TS goes curve, 1 - TS goes linear
-                self.sit = random.getrandbits(1)
+                if self.scenario is None:
+                    self.sit = random.getrandbits(1)
+                else:
+                    self.sit = self.scenario
 
                 if self.sit == 0:
                     self.ttpt = 240 + np.random.random() * 60 # time until TS is at turning point (time to turning point) # 240 initially
@@ -448,11 +459,11 @@ class AIS_Env(gym.Env):
             state_TSs = sorted(state_TSs, key=lambda x: x[-1], reverse=False)
 
             # mask dcpa
-            state_TSs_masked = []
-            for el in state_TSs:
-                el[-1] = 1. if el[-1] > 0. else -1.
-                state_TSs_masked.append(el)
-            state_TSs = state_TSs_masked
+            #state_TSs_masked = []
+            #for el in state_TSs:
+            #    el[-1] = 1. if el[-1] > 0. else -1.
+            #    state_TSs_masked.append(el)
+            #state_TSs = state_TSs_masked
 
         # or according to Euclidean distance
         else:
@@ -464,7 +475,7 @@ class AIS_Env(gym.Env):
         self.state = np.concatenate([state_OS, state_TSs], dtype=np.float32)
 
         # add some noise
-        #self.state[0:6] += np.random.normal(loc=0.0, scale=0.05, size=len(self.state[0:6]))
+        self.state += np.random.normal(loc=0.0, scale=self.noise, size=len(self.state))
 
     def _heading_control(self, a : float):
         """Controls the heading of the vessel."""
@@ -541,6 +552,7 @@ class AIS_Env(gym.Env):
 
             if ED(N0=N0, E0=E0, N1=n, E1=e) <= self.coll_dist:
                 self.r -= 1.0
+                self.collision_happened = 1
 
     def _done(self):
         """Returns boolean flag whether episode is over."""
@@ -550,6 +562,10 @@ class AIS_Env(gym.Env):
         # artificial done signal
         if self.step_cnt >= self._max_episode_steps:
             d = True
+            print(self.collision_happened)
+
+            with open(f'collision_happened_{str(uuid.uuid4())}.dict', 'wb') as f:
+                pickle.dump({"collision_happened" : self.collision_happened}, f)
 
         # create pdf trajectory
         if d and self.pdf_traj:
@@ -569,6 +585,7 @@ class AIS_Env(gym.Env):
 
     def render(self, mode=None):
         """Renders the current environment. Note: The 'mode' argument is needed since a recent update of the 'gym' package."""
+        return
 
         # plot every nth timestep (except we only want trajectory)
         if not self.pdf_traj:
