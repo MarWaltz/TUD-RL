@@ -28,7 +28,8 @@ class AIS_Env(gym.Env):
                  N_TSs : int = 5, 
                  pdf_traj : bool = False,
                  cpa : bool = False,
-                 continuous : bool = True):
+                 continuous : bool = True,
+                 include_tcpa : bool = False):
         super().__init__()
 
         # Simulation settings
@@ -45,6 +46,7 @@ class AIS_Env(gym.Env):
         # Supervised learning estimator for DCPA / TCPA
         self.cpa = cpa
         self.supervised_path = supervised_path
+        self.include_tcpa = include_tcpa
 
         if supervised_path is not None:
             self.forecast_window = 200  # forecast window
@@ -63,11 +65,14 @@ class AIS_Env(gym.Env):
             for p in self.CPA_net.parameters():
                 p.requires_grad = False
 
-        self.n_loops = 2
+        self.n_loops = 4
         self.num_obs_OS = 2                               # number of observations for the OS
         
         if cpa:
-            self.num_obs_TS = 5                               # number of observations per TS
+            if self.include_tcpa:
+                self.num_obs_TS = 6                               # number of observations per TS
+            else:
+                self.num_obs_TS = 5
         else:
             self.num_obs_TS = 4
 
@@ -97,7 +102,7 @@ class AIS_Env(gym.Env):
         self.dhead = self.n_loops * dtr(0.6)
 
         # Custom inits
-        self._max_episode_steps = 35
+        self._max_episode_steps = 15
         self.r = 0
 
     def reset(self):
@@ -424,16 +429,30 @@ class AIS_Env(gym.Env):
                 # Normalize
                 dcpa = (dcpa - self.coll_dist) / 100.0
 
-                # store it
-                state_TSs.append([ED_OS_TS_norm, bng_rel_TS, C_TS, V_TS, dcpa])
-                #["OS_spd", "CTE", "ED", "bng", "head-inter", "TS_spd", "DCPA", "TCPA"]
+                # Store it
+                if self.include_tcpa:
+                    tcpa = tcpa / 100.0
+                    state_TSs.append([ED_OS_TS_norm, bng_rel_TS, C_TS, V_TS, tcpa, dcpa])
+                else:
+                    state_TSs.append([ED_OS_TS_norm, bng_rel_TS, C_TS, V_TS, dcpa])
             else:
                 # store it
                 state_TSs.append([ED_OS_TS_norm, bng_rel_TS, C_TS, V_TS])
 
         # sort according to tcpa
         if self.cpa:
+            # for debugging:
+            self.first_TS_idx = np.argmin([el[-1] for el in state_TSs])
+
+            # usual
             state_TSs = sorted(state_TSs, key=lambda x: x[-1], reverse=False)
+
+            # mask dcpa
+            state_TSs_masked = []
+            for el in state_TSs:
+                el[-1] = 1. if el[-1] > 0. else -1.
+                state_TSs_masked.append(el)
+            state_TSs = state_TSs_masked
 
         # or according to Euclidean distance
         else:
@@ -465,6 +484,7 @@ class AIS_Env(gym.Env):
     def step(self, a):
         """Takes an action and performs one step in the environment.
         Returns new_state, r, done, {}."""
+
         # perform control action
         a = float(a)
         self.a = a
@@ -606,7 +626,7 @@ class AIS_Env(gym.Env):
 
 
                     # set other vessels
-                    for TS in self.TSs:
+                    for TS_idx, TS in enumerate(self.TSs):
 
                         # access
                         if isinstance(TS, AIS_Ship):
@@ -617,7 +637,14 @@ class AIS_Env(gym.Env):
                             N, E, headTS = TS.eta
                             chiTS = TS._get_course()
                             VTS = TS._get_V()
-                        col = "blue"
+
+                        if not hasattr(self, "first_TS_idx"):
+                            col = "blue"
+                        else:
+                            if TS_idx == self.first_TS_idx:
+                                col = "red"
+                            else:
+                                col = "blue"
 
                         # place TS
                         rect = get_rect(E = E, N = N, width = int(self.coll_dist/2), length = int(self.coll_dist), heading = headTS,
@@ -653,7 +680,7 @@ class AIS_Env(gym.Env):
                         try:
                             #ax.text(E + 10, N - 500, f"TCPA_est: {np.round(TS.tcpa, 2)}", fontsize=7,
                             #        horizontalalignment='center', verticalalignment='center', color=col)
-                            ax.text(E + 10, N - 700, f"DCPA_est: {np.round(TS.dcpa - self.coll_dist, 2)}", fontsize=7,
+                            ax.text(E + 10, N - 700, f"DCPA_est: {np.round(TS.dcpa - self.coll_dist, 2)} | TS-idx: {TS_idx}", fontsize=7,
                                     horizontalalignment='center', verticalalignment='center', color=col)
                         except:
                             pass
